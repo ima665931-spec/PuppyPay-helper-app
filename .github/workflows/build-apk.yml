@@ -26,30 +26,23 @@ jobs:
           rm -rf android
           flutter create . --project-name puppypay_helper --org com.puppypay --platforms=android
 
-      - name: Configure applicationId + permissions
+      - name: Configure applicationId + permissions + listener service
         run: |
           set -e
           APP_GRADLE=android/app/build.gradle.kts
+          MANIFEST=android/app/src/main/AndroidManifest.xml
           sed -i 's/applicationId = ".*"/applicationId = "com.puppypay.helper"/' "$APP_GRADLE"
 
-          python3 - <<'PY'
-from pathlib import Path
-p = Path("android/app/src/main/AndroidManifest.xml")
-t = p.read_text()
-perms = '''
-    <uses-permission android:name="android.permission.INTERNET"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-    <uses-permission android:name="android.permission.WAKE_LOCK"/>
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-'''
-if "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" not in t:
-    t = t.replace("<application", perms + "    <application", 1)
-    p.write_text(t)
-print("manifest ok")
-print(p.read_text()[:800])
-PY
+          # Permissions
+          sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <application|' "$MANIFEST"
+
+          # NotificationListenerService binding (required by package)
+          if ! grep -q 'NotificationListener' "$MANIFEST"; then
+            sed -i 's|</application>|        <service android:name="notification.listener.service.NotificationListener" android:label="PuppyPay Helper" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" android:exported="true">\n            <intent-filter>\n                <action android:name="android.service.notification.NotificationListenerService" />\n            </intent-filter>\n        </service>\n    </application>|' "$MANIFEST"
+          fi
+
+          echo "--- manifest head ---"
+          head -50 "$MANIFEST"
 
       - run: flutter pub get
 
