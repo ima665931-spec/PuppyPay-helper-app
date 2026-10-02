@@ -9,11 +9,13 @@ import 'package:notification_listener_service/notification_listener_service.dart
 import 'package:shared_preferences/shared_preferences.dart';
 
 const String kApiBase = 'https://puppy-pay-backend.vercel.app/api/device';
-const String kAppVersion = '1.0.0';
+const String kAppVersion = '1.1.0';
 
-// Packages that typically post UPI receive notifications
+/// FamPay is highest priority for pool phones
 const Set<String> kUpiPackages = {
+  'com.fampay.in', // FamPay / FamApp — MOST IMPORTANT
   'com.phonepe.app',
+  'com.phonepe.app.business',
   'com.google.android.apps.nbu.paisa.user',
   'net.one97.paytm',
   'in.org.npci.upiapp',
@@ -27,12 +29,9 @@ const Set<String> kUpiPackages = {
   'com.bankofbaroda.upi',
   'com.snapwork.hdfc',
   'com.enstage.wibmo.usd',
-  'com.mycompany.app.bbsc',
-  'com.finopaymentbank.finobank',
   'com.freecharge.android',
   'com.mobikwik_new',
   'com.amazon.mobile.shopping',
-  'com.phonepe.app.business',
 };
 
 void main() {
@@ -211,7 +210,7 @@ class _ConnectPageState extends State<ConnectPage> {
               const Text('PuppyPay Helper', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
               const SizedBox(height: 8),
               const Text(
-                'Pool UPI phone — listens for payment notifications',
+                'FamPay + UPI notification listener for pool phones',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.white54),
               ),
@@ -270,6 +269,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String status = 'Starting...';
   String lastEvent = '—';
   String lastResult = '—';
+  int? batteryPct;
   int reportCount = 0;
   int matchCount = 0;
   Timer? heartbeatTimer;
@@ -330,7 +330,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       );
       setState(() {
         listening = true;
-        status = 'Listening for UPI payments';
+        status = 'Listening (FamPay + UPI)';
       });
     } catch (e) {
       setState(() {
@@ -343,7 +343,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void _startHeartbeat() {
     heartbeatTimer?.cancel();
     _sendHeartbeat();
-    heartbeatTimer = Timer.periodic(const Duration(seconds: 45), (_) => _sendHeartbeat());
+    // Faster online + battery on admin panel
+    heartbeatTimer = Timer.periodic(const Duration(seconds: 20), (_) => _sendHeartbeat());
   }
 
   Future<void> _sendHeartbeat() async {
@@ -352,6 +353,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       try {
         battery = await Battery().batteryLevel;
       } catch (_) {}
+      if (battery != null && mounted) setState(() => batteryPct = battery);
       final res = await http.post(
         Uri.parse('$kApiBase/heartbeat'),
         headers: {
@@ -366,25 +368,31 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
-  /// Parse amount + optional UTR from notification text
-  Map<String, dynamic>? parsePayment(String title, String body) {
+  /// Parse amount + optional UTR from notification text (FamPay-friendly)
+  Map<String, dynamic>? parsePayment(String title, String body, String pkg) {
     final text = ('$title\n$body').replaceAll(',', '');
     final lower = text.toLowerCase();
+    final isFamPay = pkg.contains('fampay');
 
-    // Must look like money received (not sent)
+    // Credit signals (FamPay often: "received", "credited", "money added")
     final isCredit = RegExp(
-      r'received|credited|credit|deposited|has received|ne bheje|mila|prapt|collected|payment of',
+      r'received|credited|credit|deposited|has received|ne bheje|mila|prapt|collected|payment of|money added|got rs|you got|incoming',
       caseSensitive: false,
     ).hasMatch(lower);
-    final isDebitOnly = RegExp(r'debited|sent to|paid to|you paid|withdrawn', caseSensitive: false).hasMatch(lower) &&
+    final isDebitOnly = RegExp(
+          r'debited|sent to|paid to|you paid|withdrawn|payment to|paid rs',
+          caseSensitive: false,
+        ).hasMatch(lower) &&
         !isCredit;
     if (isDebitOnly) return null;
+    // FamPay: allow if amount present even with weaker wording
+    if (!isCredit && !isFamPay) return null;
 
-    // Amount patterns
     final amountPatterns = [
       RegExp(r'(?:rs\.?|inr|₹)\s*([0-9]+(?:\.[0-9]{1,2})?)', caseSensitive: false),
       RegExp(r'([0-9]+(?:\.[0-9]{1,2})?)\s*(?:rs\.?|inr|₹)', caseSensitive: false),
       RegExp(r'(?:amount|amt)[:\s]+([0-9]+(?:\.[0-9]{1,2})?)', caseSensitive: false),
+      RegExp(r'received\s+([0-9]+(?:\.[0-9]{1,2})?)', caseSensitive: false),
     ];
     double? amount;
     for (final re in amountPatterns) {
@@ -394,11 +402,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         if (amount != null && amount > 0) break;
       }
     }
-    if (amount == null || amount <= 0) return null;
-    // Sanity: ignore tiny / huge junk
-    if (amount < 1 || amount > 500000) return null;
+    if (amount == null || amount < 1 || amount > 500000) return null;
 
-    // UTR / UPI ref (12 digit common)
     String? utr;
     final utrRe = RegExp(r'\b([0-9]{12})\b');
     final um = utrRe.firstMatch(text);
@@ -409,6 +414,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   String _guessSource(String? packageName) {
     final p = (packageName ?? '').toLowerCase();
+    if (p.contains('fampay')) return 'fampay';
     if (p.contains('phonepe')) return 'phonepe';
     if (p.contains('paisa') || p.contains('google')) return 'gpay';
     if (p.contains('paytm')) return 'paytm';
@@ -420,25 +426,26 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Future<void> _onNotification(ServiceNotificationEvent event) async {
     try {
+      // Skip removed events
+      if (event.hasRemoved == true) return;
+
       final pkg = event.packageName ?? '';
-      // Prefer known UPI apps; still allow others if text looks like credit
       final title = event.title ?? '';
       final body = event.content ?? '';
       final raw = '$title | $body';
 
-      final parsed = parsePayment(title, body);
+      final parsed = parsePayment(title, body, pkg);
       if (parsed == null) return;
 
-      // Dedupe same notif
       final key = '${pkg}_${parsed['amount']}_${parsed['utr'] ?? ''}_${title.hashCode}';
       if (_seenKeys.contains(key)) return;
       _seenKeys.add(key);
-      if (_seenKeys.length > 200) {
+      if (_seenKeys.length > 300) {
         _seenKeys.remove(_seenKeys.first);
       }
 
-      // If not known package, only accept strong credit wording
-      if (!kUpiPackages.contains(pkg)) {
+      final isKnown = kUpiPackages.contains(pkg) || pkg.contains('fampay');
+      if (!isKnown) {
         final lower = raw.toLowerCase();
         if (!lower.contains('received') && !lower.contains('credited') && !lower.contains('₹')) {
           return;
@@ -449,6 +456,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         lastEvent = 'Rs ${parsed['amount']} · ${parsed['utr'] ?? 'no-utr'} · ${_guessSource(pkg)}';
       });
 
+      // Fire immediately — speed is critical for auto-success before UTR screen
       await _reportPayment(
         amount: parsed['amount'] as double,
         utr: parsed['utr'] as String?,
@@ -501,7 +509,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  /// Manual test report (for debugging without real notif)
   Future<void> _testReport() async {
     await _reportPayment(
       amount: 1.0,
@@ -556,6 +563,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           const SizedBox(height: 12),
           _info('Device', widget.deviceName),
           _info('UPI', widget.upiId.isEmpty ? '— (set in admin)' : widget.upiId),
+          _info('Battery', batteryPct != null ? '$batteryPct%' : '—'),
           _info('Last payment seen', lastEvent),
           _info('Last server result', lastResult),
           _info('Reports / Matched', '$reportCount / $matchCount'),
@@ -581,7 +589,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 20),
           const Text(
-            'Keep this app installed. Turn off battery optimization for PuppyPay Helper so it runs with screen off.',
+            'FamPay notifications are priority. Keep battery unrestricted so listening works with screen off.',
             style: TextStyle(color: Colors.white38, fontSize: 12),
           ),
         ],
