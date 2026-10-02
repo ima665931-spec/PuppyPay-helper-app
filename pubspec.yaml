@@ -1,0 +1,25 @@
+name: puppypay_helper
+description: PuppyPay helper APK — reads UPI payment notifications and reports to backend
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.2
+  shared_preferences: ^2.3.2
+  notification_listener_service: ^0.3.4
+  battery_plus: ^6.0.3
+  device_info_plus: ^10.1.2
+  permission_handler: ^11.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
